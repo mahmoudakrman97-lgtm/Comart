@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quiz Maker – Pollinations</title>
+<style>
+  body {
+    margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:#0d0b10; color:#e8e2d8; font-family: system-ui, sans-serif;
+    padding: 24px;
+  }
+  .card {
+    background:#17141b; border:1px solid #3a2f26; border-radius:12px;
+    padding:2rem; width:100%; max-width:520px;
+  }
+  h1 { font-size:1.3rem; margin:0 0 0.5rem; color:#c9a24b; text-align:center; }
+  p.sub { color:#a89f95; font-size:0.9rem; text-align:center; }
+  button {
+    display:block; width:100%; box-sizing:border-box;
+    margin-top:1rem; padding:0.8rem 1.5rem;
+    background:#8b1e2b; color:#fff; border:none; border-radius:8px;
+    font-size:1rem; cursor:pointer;
+  }
+  button:hover { background:#a5222f; }
+  button.secondary { background:#3a2f26; }
+  button.secondary:hover { background:#4a3c30; }
+  input[type="text"], select {
+    width:100%; padding:0.75rem 0.9rem; border-radius:8px; border:1px solid #3a2f26;
+    background:#0d0b10; color:#e8e2d8; font-family:inherit; font-size:0.95rem;
+    margin-top:0.8rem; box-sizing:border-box;
+  }
+  .q { margin-top:1.4rem; }
+  .q p { margin:0 0 0.5rem; font-weight:600; }
+  .opt {
+    display:flex; align-items:center; gap:0.6rem;
+    padding:0.55rem 0.7rem; margin-top:0.4rem; border-radius:8px;
+    border:1px solid #3a2f26; cursor:pointer; font-size:0.92rem;
+  }
+  .opt.correct { border-color:#4caf7a; background:rgba(76,175,122,0.15); }
+  .opt.wrong { border-color:#e07a7a; background:rgba(224,122,122,0.15); }
+  #score { margin-top:1rem; text-align:center; font-size:1.2rem; color:#c9a24b; font-weight:600; }
+  #status { color:#a89f95; font-size:0.85rem; margin-top:0.8rem; text-align:center; }
+  #error-box { color:#e07a7a; font-size:0.85rem; margin-top:1rem; display:none; text-align:center; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div id="login-screen">
+      <h1>Sign In</h1>
+      <p class="sub">Sign in with your Pollinations account to use your own Pollen balance.</p>
+      <button id="login-btn">Sign in with Pollinations</button>
+    </div>
+
+    <div id="logged-in-screen" style="display:none">
+      <h1>Quiz Maker</h1>
+      <p class="sub">Pick a topic and get a 5-question quiz, generated with your own Pollen balance.</p>
+      <input type="text" id="topicInput" placeholder="e.g. The solar system, World War II, JavaScript basics...">
+      <select id="levelInput">
+        <option value="easy">Easy</option>
+        <option value="medium" selected>Medium</option>
+        <option value="hard">Hard</option>
+      </select>
+      <button id="generateBtn">Generate quiz</button>
+      <div id="quiz"></div>
+      <button id="checkBtn" style="display:none">Check answers</button>
+      <div id="score"></div>
+      <div id="status"></div>
+      <button class="secondary" id="logout-btn">Sign out</button>
+    </div>
+
+    <div id="error-box"></div>
+  </div>
+
+<script>
+// Put your App Key here (pk_...), registered for THIS repository's exact URL
+const APP_KEY = "pk_EX8MA0MmYrorcn6o";
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+const SCOPE = "openid profile";
+
+function base64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+async function sha256(str) {
+  return await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+}
+function randomString(len = 64) {
+  const arr = new Uint8Array(len);
+  crypto.getRandomValues(arr);
+  return base64url(arr.buffer);
+}
+async function discoverEndpoints() {
+  const res = await fetch('https://enter.pollinations.ai/.well-known/oauth-authorization-server');
+  if (!res.ok) throw new Error('Failed to fetch Pollinations auth configuration');
+  return res.json();
+}
+function showError(msg) {
+  const box = document.getElementById('error-box');
+  box.textContent = msg;
+  box.style.display = 'block';
+}
+function showLoggedIn() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('logged-in-screen').style.display = 'block';
+}
+function setStatus(msg) {
+  document.getElementById('status').textContent = msg;
+}
+
+async function startLogin() {
+  try {
+    const meta = await discoverEndpoints();
+    const codeVerifier = randomString(64);
+    const codeChallenge = base64url(await sha256(codeVerifier));
+    const state = randomString(24);
+
+    sessionStorage.setItem('pkce_verifier', codeVerifier);
+    sessionStorage.setItem('oauth_state', state);
+
+    const url = new URL(meta.authorization_endpoint);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', APP_KEY);
+    url.searchParams.set('redirect_uri', REDIRECT_URI);
+    url.searchParams.set('state', state);
+    url.searchParams.set('code_challenge', codeChallenge);
+    url.searchParams.set('code_challenge_method', 'S256');
+    url.searchParams.set('scope', SCOPE);
+    window.location.href = url.toString();
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+async function handleCallback(code, state) {
+  const savedState = sessionStorage.getItem('oauth_state');
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  if (!verifier || state !== savedState) {
+    showError('Session verification failed (state mismatch). Please sign in again.');
+    return;
+  }
+  try {
+    const meta = await discoverEndpoints();
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT_URI,
+      client_id: APP_KEY,
+      code_verifier: verifier
+    });
+    const res = await fetch(meta.token_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    });
+    if (!res.ok) throw new Error('Failed to exchange authorization code for a key');
+    const data = await res.json();
+    localStorage.setItem('pollinations_api_key', data.access_token);
+    sessionStorage.removeItem('pkce_verifier');
+    sessionStorage.removeItem('oauth_state');
+    window.history.replaceState({}, document.title, REDIRECT_URI);
+    showLoggedIn();
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+let currentQuiz = [];
+
+function renderQuiz() {
+  const quizBox = document.getElementById('quiz');
+  quizBox.innerHTML = '';
+  currentQuiz.forEach((item, i) => {
+    const qDiv = document.createElement('div');
+    qDiv.className = 'q';
+    const title = document.createElement('p');
+    title.textContent = `${i + 1}. ${item.question}`;
+    qDiv.appendChild(title);
+    item.options.forEach((optText, j) => {
+      const label = document.createElement('label');
+      label.className = 'opt';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'q' + i;
+      radio.value = String(j);
+      const span = document.createElement('span');
+      span.textContent = optText;
+      label.appendChild(radio);
+      label.appendChild(span);
+      qDiv.appendChild(label);
+    });
+    quizBox.appendChild(qDiv);
+  });
+  document.getElementById('checkBtn').style.display = 'block';
+}
+
+async function generateQuiz() {
+  const key = localStorage.getItem('pollinations_api_key');
+  const topic = document.getElementById('topicInput').value.trim();
+  const level = document.getElementById('levelInput').value;
+  document.getElementById('quiz').innerHTML = '';
+  document.getElementById('score').textContent = '';
+  document.getElementById('checkBtn').style.display = 'none';
+
+  if (!topic) { setStatus('Enter a topic first.'); return; }
+  setStatus('Generating quiz...');
+
+  try {
+    const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'openai',
+        messages: [
+          {
+            role: 'system',
+            content: `Create a ${level} multiple-choice quiz with exactly 5 questions about the user's topic. Respond with ONLY a JSON array, no markdown and no explanation. Each item must be: {"question": string, "options": [exactly 4 strings], "answer": index (0-3) of the correct option}.`
+          },
+          { role: 'user', content: topic }
+        ]
+      })
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = JSON.stringify(await res.json()); }
+      catch { detail = await res.text(); }
+      throw new Error(`HTTP ${res.status} — ${detail}`);
+    }
+    const data = await res.json();
+    const raw = data.choices[0].message.content;
+    const match = raw.match(/\[[\s\S]*\]/);
+    const parsed = JSON.parse(match ? match[0] : raw);
+
+    const valid = Array.isArray(parsed) && parsed.length > 0 && parsed.every(
+      (q) => typeof q.question === 'string' && Array.isArray(q.options) &&
+             q.options.length >= 2 && Number.isInteger(q.answer) &&
+             q.answer >= 0 && q.answer < q.options.length
+    );
+    if (!valid) throw new Error('The model returned an unexpected format. Please try again.');
+
+    currentQuiz = parsed;
+    renderQuiz();
+    setStatus('');
+  } catch (err) {
+    setStatus('Failed to generate quiz: ' + err.message);
+  }
+}
+
+function checkAnswers() {
+  let correct = 0;
+  currentQuiz.forEach((item, i) => {
+    const labels = document.querySelectorAll(`input[name="q${i}"]`);
+    labels.forEach((radio, j) => {
+      const label = radio.parentElement;
+      label.classList.remove('correct', 'wrong');
+      if (j === item.answer) label.classList.add('correct');
+      else if (radio.checked) label.classList.add('wrong');
+      if (radio.checked && j === item.answer) correct++;
+    });
+  });
+  document.getElementById('score').textContent = `Score: ${correct} / ${currentQuiz.length}`;
+}
+
+document.getElementById('login-btn').addEventListener('click', startLogin);
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('pollinations_api_key');
+  location.reload();
+});
+document.getElementById('generateBtn')?.addEventListener('click', generateQuiz);
+document.getElementById('checkBtn')?.addEventListener('click', checkAnswers);
+
+(function init() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const state = params.get('state');
+  if (code && state) {
+    handleCallback(code, state);
+  } else if (localStorage.getItem('pollinations_api_key')) {
+    showLoggedIn();
+  }
+})();
+</script>
+</body>
+</html>
